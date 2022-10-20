@@ -1,0 +1,9 @@
+/Users/sebastienladuca/personal/rainbase/contract/target/debug/deps/serde_wasm_bindgen-de0b7600a28a6dcb.rmeta: /Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/lib.rs /Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/de.rs /Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/error.rs /Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/ser.rs /Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/../README.md
+
+/Users/sebastienladuca/personal/rainbase/contract/target/debug/deps/serde_wasm_bindgen-de0b7600a28a6dcb.d: /Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/lib.rs /Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/de.rs /Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/error.rs /Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/ser.rs /Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/../README.md
+
+/Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/lib.rs:
+/Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/de.rs:
+/Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/error.rs:
+/Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/ser.rs:
+/Users/sebastienladuca/.cargo/registry/src/github.com-1ecc6299db9ec823/serde-wasm-bindgen-0.4.5/src/../README.md:
