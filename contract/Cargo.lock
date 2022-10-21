@@ -1144,7 +1144,6 @@ checksum = "ed7ba8172e1695bdb3c21cb11c5b688572c9095dc2c6d72bc16d200c45f35e7a"
 dependencies = [
  "cfg-if 1.0.0",
  "itertools",
- "rand 0.8.5",
  "rustc-hash",
  "variter",
 ]
