@@ -17,30 +17,37 @@ use near_sdk::{
         LookupMap,
     }
 };
-use barnett_smart_card_protocol::discrete_log_cards::{
-    BnPublicKeyBuf,
-    BnParamsBuf,
-    BnMaskedCardBuf,
-    BnRevealTokenWithProofBuf,
-    BnZKProofKeyOwnershipBuf,
-    BnPublicKey,
-    BnPlayerSecretKey,
-    BnCard,
-    BnMaskedCard, 
-    BnRevealToken, 
-    BnZKProofShuffle,
-    BnParameters, 
-    BnCardProtocol,
-    BnZKProofKeyOwnership,
-    BnZKProofMasking,
-    BnZKProofRemasking,
-    BnZKProofReveal,
+use barnett_smart_card_protocol::{
+    BarnettSmartProtocol,
+    discrete_log_cards::{
+        BnPublicKeyBuf,
+        BnParamsBuf,
+        BnMaskedCardBuf,
+        BnRevealTokenWithProofBuf,
+        BnZKProofKeyOwnershipBuf,
+        BnPublicKey,
+        BnPlayerSecretKey,
+        BnCard,
+        BnMaskedCard, 
+        BnRevealToken, 
+        BnZKProofShuffle,
+        BnParameters, 
+        BnCardProtocol,
+        BnZKProofKeyOwnership,
+        BnZKProofMasking,
+        BnZKProofRemasking,
+        BnZKProofReveal,
+    }
 };
-
+use rand::{
+    Rng,
+    SeedableRng,
+    rngs::StdRng
+};
 
 const GAMES_STORAGE_KEY: &'static [u8] = b"GAMES";
 
-type GameId = [u8; 32];
+type GameId = [u8; 4];
 
 // Define the contract structure
 #[near_bindgen]
@@ -52,13 +59,13 @@ pub struct Contract {
 
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct GameLobby {
-    pub id: String,
+    pub id: GameId,
     pub player_account_ids: Vec<AccountId>,
     pub player_game_pubkeys: Vec<BnPublicKeyBuf>,
 }
 
 impl GameLobby {
-    fn new(id: String, player_account_ids: Vec<AccountId>, player_game_pubkeys: Vec<BnPublicKeyBuf>) -> Self {
+    fn new(id: GameId, player_account_ids: Vec<AccountId>, player_game_pubkeys: Vec<BnPublicKeyBuf>) -> Self {
         Self {
             id,
             player_account_ids,
@@ -82,7 +89,7 @@ impl GameLobby {
 
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct GameState {
-    pub id: String,
+    pub id: GameId,
     pub player_account_ids: Vec<AccountId>,
     // game state
 
@@ -98,6 +105,10 @@ pub struct GameState {
 
     /// the number of "chips" each player has
     pub balances: Vec<Balance>,
+
+    // TODO: find a more intelligent way to do this
+    /// used to detect when the game is "over". Games that haven't been touched for over an hour are considered "over"
+    pub last_modified: u64,
 
     // cryptography state
 
@@ -124,8 +135,8 @@ pub struct GameState {
 pub enum Game {
     WaitingForPlayers(GameLobby),
     InProgress(GameState),
-    Finished,
 }
+
 
 // Implement the contract structure
 #[near_bindgen]
@@ -139,15 +150,66 @@ impl Contract {
         }
     }
 
-    // pub fn create_game(&mut self, id: GameId, creator_pk: BnPublicKeyBuf, creator_key_ownership_proof: BnZKProofKeyOwnershipProofBuf) {
-    //     let pk = creator.deserialize().expect("failed to deserialize public key buf");
-    //     let 
+    fn generate_game_id(&self) -> GameId {
+        let seed = env::random_seed();
+        assert!(seed.len() >= 32, "random seed is too short - this should never happen!");
 
-    //     let creator_account_id = env::predecessor_account_id();
-    //     let lobby = GameLobby::new(id, vec![creator_account_id], vec![creator_pk]);
+        let mut rng = StdRng::from_seed(seed[0..32].try_into().unwrap());
 
-    //     self.games.insert(&id, &Game::WaitingForPlayers(lobby));
-    // }
+        // TODO: find a more intelligent way to do this
+        loop {
+            let digits: [u8; 4] = [(); 4].map(|_| rng.gen_range(0..10));
+            if !self.games.contains_key(&digits) {
+                return digits;
+            }
+
+            let game = self.games.get(&digits).unwrap();
+            if let Game::InProgress(ref game_state) = game {
+                if env::block_timestamp() - game_state.last_modified > 3600 * 1000 {
+                    return digits;
+                }
+            }
+        }
+    }
+
+    pub fn create_game(&mut self, creator_pk: BnPublicKeyBuf, creator_key_ownership_proof: BnZKProofKeyOwnershipBuf) -> GameId {
+        let pk = creator_pk.deserialize().expect("failed to deserialize public key");
+        let proof = creator_key_ownership_proof.deserialize().expect("failed to deserialize key ownership proof");
+        let pp = self.trusted_setup_params.deserialize().expect("failed to deserialize trusted setup params");
+        let creator_account_id = env::predecessor_account_id();
+        let creator_account_id_bytes = creator_account_id.as_bytes();
+
+        BnCardProtocol::verify_key_ownership(&pp, &pk, &creator_account_id_bytes, &proof).expect("failed to verify key ownership proof");
+
+        let game_id = self.generate_game_id();
+        let lobby = GameLobby::new(game_id, vec![creator_account_id], vec![creator_pk]);
+
+        self.games.insert(&game_id, &Game::WaitingForPlayers(lobby));
+        game_id
+    }
+
+    pub fn join_game(&mut self, game_id: GameId, pk: BnPublicKeyBuf, key_ownership_proof: BnZKProofKeyOwnershipBuf) {
+        assert!(self.games.contains_key(&game_id), "game does not exist");
+
+        let mut game = self.games.get(&game_id).unwrap();
+
+        match game {
+            Game::WaitingForPlayers(ref mut lobby) => {
+                let account_id = env::predecessor_account_id();
+                assert!(lobby.player_account_ids.iter().all(|id| id != &account_id), "already in lobby");
+
+                let _pk = pk.deserialize().expect("failed to deserialize public key");
+                let proof = key_ownership_proof.deserialize().expect("failed to deserialize key ownership proof");
+                let pp = self.trusted_setup_params.deserialize().expect("failed to deserialize trusted setup params");
+
+                let account_id_bytes = account_id.as_bytes();
+                BnCardProtocol::verify_key_ownership(&pp, &_pk, &account_id_bytes, &proof).expect("failed to verify key ownership proof");
+
+                lobby.add_player(account_id, pk);
+            },
+            _ => panic!("game is no longer accepting for players")
+        }
+    }
 }
 
 /*

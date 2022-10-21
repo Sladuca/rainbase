@@ -810,6 +810,7 @@ version = "1.0.0"
 dependencies = [
  "barnett-smart-card-protocol",
  "near-sdk",
+ "rand 0.8.5",
  "uint",
 ]
 
