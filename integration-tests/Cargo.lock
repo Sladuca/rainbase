@@ -361,7 +361,7 @@ dependencies = [
 [[package]]
 name = "barnett-smart-card-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sladuca/mental-poker.git#ba41c6fb582d5534b76ba38bb4ff0381c693d853"
+source = "git+https://github.com/Sladuca/mental-poker.git#4b9a6a6753a4ec00c547f27f71c12f866c94baf3"
 dependencies = [
  "ark-crypto-primitives",
  "ark-ec",
