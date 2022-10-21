@@ -25,6 +25,7 @@ use barnett_smart_card_protocol::{
         BnMaskedCardBuf,
         BnRevealTokenWithProofBuf,
         BnZKProofKeyOwnershipBuf,
+        BnCardBuf,
         BnPublicKey,
         BnPlayerSecretKey,
         BnCard,
@@ -37,6 +38,7 @@ use barnett_smart_card_protocol::{
         BnZKProofMasking,
         BnZKProofRemasking,
         BnZKProofReveal,
+        get_card_elems_buf,
     }
 };
 use rand::{
@@ -55,21 +57,31 @@ type GameId = [u8; 4];
 pub struct Contract {
     games: LookupMap<GameId, Game>,
     trusted_setup_params: BnParamsBuf,
+    card_values: Vec<BnCardBuf>,
 }
 
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct GameLobby {
+    /// the id for the game. players will use this to join the game
     pub id: GameId,
+
+    /// the NEAR AccountIds of the players in the game
+    /// the 0th playre
     pub player_account_ids: Vec<AccountId>,
     pub player_game_pubkeys: Vec<BnPublicKeyBuf>,
+
+    /// this is used to detect stale lobbies. Lobbies more than 30 minutes old will be deleted
+    pub created_at: u64,
 }
 
 impl GameLobby {
     fn new(id: GameId, player_account_ids: Vec<AccountId>, player_game_pubkeys: Vec<BnPublicKeyBuf>) -> Self {
+        let created_at = env::block_timestamp();
         Self {
             id,
             player_account_ids,
             player_game_pubkeys,
+            created_at,
         }
     }
 
@@ -91,17 +103,26 @@ impl GameLobby {
 pub struct GameState {
     pub id: GameId,
     pub player_account_ids: Vec<AccountId>,
+
     // game state
+
+    /// the current phase of the round - can be one of INIT, SHUFFLE, BET0, FLOP, BET1, TURN, BET2, RIVER, BET3, SHOWDOWN
+    pub phase: Phase,
 
     /// the current player whose turn it is
     pub turn: usize,
 
     /// the current "dealer". Since everyone shuffles, in practice this is just the player who publishes the initial deck for the round
     /// this is also used to determine who the little blind, big blind, and action is
+    /// this increases by one each round
     pub dealer: usize,
 
     /// the amounts each player has bet so far
     pub bets: Vec<Balance>,
+
+    /// which players are still in on the round
+    /// when a player folds, their corresponding `Option` is set to `None`
+    pub players_in: Vec<Option<()>>,
 
     /// the number of "chips" each player has
     pub balances: Vec<Balance>,
@@ -131,6 +152,70 @@ pub struct GameState {
     pub reveal_tokens_with_proofs: Vec<Vec<Option<BnRevealTokenWithProofBuf>>>,
 }
 
+impl GameState {
+    fn new(id: GameId, player_account_ids: Vec<AccountId>, player_game_pubkeys: Vec<BnPublicKeyBuf>, pp: BnParamsBuf) -> Self {
+        let num_players = player_account_ids.len();
+        let _pp = pp.deserialize().expect("failed to deserialize public parameters");
+        let mut player_infos = Vec::new();
+        for (account_id, pk) in player_account_ids.iter().zip(player_game_pubkeys.iter()) {
+            let pk = pk.deserialize().expect("failed to deserialize player public key");
+            player_infos.push((pk, account_id.as_bytes()));
+        }
+
+        let aggregate_pubkey = BnCardProtocol::compute_aggregate_key(&_pp, &player_infos, None).expect("failed to aggregate public keys");
+        let aggregate_pubkey = BnPublicKeyBuf::serialize(aggregate_pubkey).expect("failed to serialize aggregate public key");
+        
+        Self {
+            id,
+            player_account_ids,
+            phase: Phase::INIT,
+            turn: 0,
+            dealer: 0,
+            bets: vec![0; num_players],
+            players_in: vec![Some(()); num_players],
+            balances: vec![0; num_players],
+            last_modified: env::block_timestamp(),
+            pp,
+            player_game_pubkeys,
+            aggregate_pubkey,
+            deck: vec![],
+            reveal_tokens_with_proofs: vec![vec![None; num_players]; 52],
+        }
+    }
+
+    fn num_players(&self) -> usize {
+        self.player_account_ids.len()
+    }
+
+    fn num_cards(&self) -> usize {
+        let pp = self.pp.deserialize().expect("failed to deserialize public parameters");
+        pp.num_cards()
+    }
+
+    fn player_index(&self, account_id: &AccountId) -> Option<usize> {
+        self.player_account_ids.iter().position(|id| id == account_id)
+    }
+
+    fn player_account_id(&self, player_index: usize) -> AccountId {
+        self.player_account_ids[player_index].clone()
+    }
+}
+
+
+#[derive(BorshDeserialize, BorshSerialize)]
+pub enum Phase {
+    INIT,
+    SHUFFLE,
+    BET0,
+    FLOP,
+    BET1,
+    TURN,
+    BET2,
+    RIVER,
+    BET3,
+    SHOWDOWN,
+}
+
 #[derive(BorshDeserialize, BorshSerialize)]
 pub enum Game {
     WaitingForPlayers(GameLobby),
@@ -138,17 +223,31 @@ pub enum Game {
 }
 
 
+// temporary hack so it deploys without automating trusted setup
+impl Default for Contract {
+    fn default() -> Self {
+        let card_values = get_card_elems_buf(52).unwrap();
+        Self {
+            games: LookupMap::new(GAMES_STORAGE_KEY),
+            trusted_setup_params: BnParamsBuf { buf: vec![] },
+            card_values,
+        }
+    }
+}
+
 // Implement the contract structure
 #[near_bindgen]
 impl Contract {
-    #[init]
-    #[private]
-    pub fn init(trusted_setup_params: BnParamsBuf) -> Self {
-        Self {
-            games: LookupMap::new(GAMES_STORAGE_KEY),
-            trusted_setup_params,
-        }
-    }
+    // #[init]
+    // #[private]
+    // pub fn init(trusted_setup_params: BnParamsBuf) -> Self {
+    //     let card_values = get_card_elems_buf(52).unwrap();
+    //     Self {
+    //         games: LookupMap::new(GAMES_STORAGE_KEY),
+    //         trusted_setup_params,
+    //         card_values,
+    //     }
+    // }
 
     fn generate_game_id(&self) -> GameId {
         let seed = env::random_seed();
@@ -166,6 +265,12 @@ impl Contract {
             let game = self.games.get(&digits).unwrap();
             if let Game::InProgress(ref game_state) = game {
                 if env::block_timestamp() - game_state.last_modified > 3600 * 1000 {
+                    return digits;
+                }
+            }
+
+            if let Game::WaitingForPlayers(ref lobby) = game {
+                if env::block_timestamp() - lobby.created_at > 20 * 60 * 1000 {
                     return digits;
                 }
             }
@@ -210,6 +315,30 @@ impl Contract {
             _ => panic!("game is no longer accepting for players")
         }
     }
+
+    // called once by the game creator to end the lobby
+    // pub fn start_game(&mut self, game_id: GameId) {
+    //     assert!(self.games.contains_key(&game_id), "game does not exist");
+
+    //     let game = self.games.get(&game_id).unwrap();
+
+    //     match game {
+    //         Game::WaitingForPlayers(lobby) => {
+    //             let account_id = env::predecessor_account_id();
+    //             assert!(lobby.player_account_ids[0] == account_id, "only the creator can start the game");
+
+    //             let GameLobby {
+    //                 id: _,
+    //                 player_account_ids,
+    //                 player_game_pubkeys,
+    //             } = lobby;
+
+    //             let state = GameState::new(game_id, player_account_ids, player_game_pubkeys, self.trusted_setup_params.clone());
+    //             self.games.insert(&game_id, &Game::InProgress(state));
+    //         },
+    //         _ => panic!("game is no longer accepting players")
+    //     }
+    // }
 }
 
 /*
