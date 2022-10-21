@@ -493,6 +493,20 @@ impl Contract {
         }
     }
 
+    pub fn get_params(&self) -> BnParamsBuf {
+        self.trusted_setup_params.clone()
+    }
+
+    pub fn get_aggregate_pubkey(&self, game_id: GameId) -> BnPublicKeyBuf {
+        let game = self.games.get(&game_id).expect("game not found");
+        let game = match game {
+            Game::WaitingForPlayers(_) => panic!("game not in progress"),
+            Game::InProgress(game) => game,
+        };
+
+        game.aggregate_pubkey.clone()
+    }
+
     fn generate_game_id(&self) -> GameId {
         let seed = env::random_seed();
         assert!(seed.len() >= 32, "random seed is too short - this should never happen!");
