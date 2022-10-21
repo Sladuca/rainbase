@@ -8,7 +8,6 @@
 
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::{
-    log,
     near_bindgen,
     AccountId,
     Balance, 
@@ -222,8 +221,7 @@ pub enum Game {
     InProgress(GameState),
 }
 
-
-// temporary hack so it deploys without automating trusted setup
+// this should not be used. for now it's just gonna put an empty buffer. eventually this will panic.
 impl Default for Contract {
     fn default() -> Self {
         let card_values = get_card_elems_buf(52).unwrap();
@@ -238,16 +236,18 @@ impl Default for Contract {
 // Implement the contract structure
 #[near_bindgen]
 impl Contract {
-    // #[init]
-    // #[private]
-    // pub fn init(trusted_setup_params: BnParamsBuf) -> Self {
-    //     let card_values = get_card_elems_buf(52).unwrap();
-    //     Self {
-    //         games: LookupMap::new(GAMES_STORAGE_KEY),
-    //         trusted_setup_params,
-    //         card_values,
-    //     }
-    // }
+    #[init]
+    #[private]
+    pub fn init(trusted_setup_params: BnParamsBuf) -> Self {
+        let card_values = get_card_elems_buf(52).unwrap();
+        // check serialization of params
+        // let _ = trusted_setup_params.deserialize().expect("failed to deserialize trusted setup params");
+        Self {
+            games: LookupMap::new(GAMES_STORAGE_KEY),
+            trusted_setup_params,
+            card_values,
+        }
+    }
 
     fn generate_game_id(&self) -> GameId {
         let seed = env::random_seed();

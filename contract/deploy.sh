@@ -7,7 +7,12 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
-echo ">> Deploying contract"
+echo ">> performing trusted setup"
+cargo run --example trusted_setup
+PARAMS_JSON=`cat params.json`
 
-# https://docs.near.org/tools/near-cli#near-dev-deploy
-near dev-deploy --wasmFile ./target/wasm32-unknown-unknown/release/hello_near.wasm
+echo ">> Deploying contract"
+ARGS="{ \"trusted_setup_params\": $PARAMS_JSON }"
+near dev-deploy --wasmFile ./target/wasm32-unknown-unknown/release/rainbase_contract.wasm
+DEV_ACCOUNT=`cat neardev/dev-account`
+near call $DEV_ACCOUNT init "'$ARGS'" --accountId $DEV_ACCOUNT
