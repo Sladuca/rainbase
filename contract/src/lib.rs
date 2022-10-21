@@ -317,28 +317,29 @@ impl Contract {
     }
 
     // called once by the game creator to end the lobby
-    // pub fn start_game(&mut self, game_id: GameId) {
-    //     assert!(self.games.contains_key(&game_id), "game does not exist");
+    pub fn start_game(&mut self, game_id: GameId) {
+        assert!(self.games.contains_key(&game_id), "game does not exist");
 
-    //     let game = self.games.get(&game_id).unwrap();
+        let game = self.games.get(&game_id).unwrap();
 
-    //     match game {
-    //         Game::WaitingForPlayers(lobby) => {
-    //             let account_id = env::predecessor_account_id();
-    //             assert!(lobby.player_account_ids[0] == account_id, "only the creator can start the game");
+        match game {
+            Game::WaitingForPlayers(lobby) => {
+                let account_id = env::predecessor_account_id();
+                assert!(lobby.player_account_ids[0] == account_id, "only the creator can start the game");
 
-    //             let GameLobby {
-    //                 id: _,
-    //                 player_account_ids,
-    //                 player_game_pubkeys,
-    //             } = lobby;
+                let GameLobby {
+                    id: _,
+                    player_account_ids,
+                    player_game_pubkeys,
+                    created_at: _,
+                } = lobby;
 
-    //             let state = GameState::new(game_id, player_account_ids, player_game_pubkeys, self.trusted_setup_params.clone());
-    //             self.games.insert(&game_id, &Game::InProgress(state));
-    //         },
-    //         _ => panic!("game is no longer accepting players")
-    //     }
-    // }
+                let state = GameState::new(game_id, player_account_ids, player_game_pubkeys, self.trusted_setup_params.clone());
+                self.games.insert(&game_id, &Game::InProgress(state));
+            },
+            _ => panic!("game is no longer accepting players")
+        }
+    }
 }
 
 /*
