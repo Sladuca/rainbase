@@ -47,8 +47,11 @@ use rand::{
     SeedableRng,
     rngs::StdRng
 };
+use poker::{Card, Rank, Suit, Evaluator};
 
 const GAMES_STORAGE_KEY: &'static [u8] = b"GAMES";
+const MAPPING_STORAGE_KEY: &'static [u8] = b"CARD_MAPPING";
+
 const LITTLE_BLIND_AMOUNT: Balance = 5;
 const BIG_BLIND_AMOUNT: Balance = 10;
 
@@ -60,7 +63,19 @@ type GameId = [u8; 4];
 pub struct Contract {
     games: LookupMap<GameId, Game>,
     trusted_setup_params: BnParamsBuf,
-    card_values: Vec<BnCardBuf>,
+    card_mapping: LookupMap<BnCardBuf, usize>,
+}
+
+fn card_value_to_card(mapping: &LookupMap<BnCardBuf, usize>, value: &BnCardBuf) -> Card {
+    const SUITS: [Suit; 4] = [Suit::Spades, Suit::Hearts, Suit::Diamonds, Suit::Clubs];
+    const RANKS: [Rank; 13] = [
+        Rank::Two, Rank::Three, Rank::Four, Rank::Five, Rank::Six, Rank::Seven, Rank::Eight, Rank::Nine, Rank::Ten, Rank::Jack, Rank::Queen, Rank::King, Rank::Ace
+    ];
+
+    let card_idx = mapping.get(value).expect("card value not found");
+    let rank_idx = card_idx % 13;
+    let suit_idx = card_idx / 13;
+    Card::new(RANKS[rank_idx], SUITS[suit_idx])
 }
 
 #[derive(BorshDeserialize, BorshSerialize)]
@@ -349,6 +364,74 @@ impl GameState {
     fn player_is_folded(&self, i: usize) -> bool {
         matches!(self.bets[i], BetAmount::Folded(_))
     }
+
+    fn transfer_pot(&mut self, winner: usize) {
+        for (loser, bet) in self.bets.iter().enumerate().filter(|(i, _)| *i != winner) {
+            match bet {
+                BetAmount::In(amount) => {
+                    self.balances[winner] += amount;
+                    self.balances[loser] -= amount;
+                }
+                BetAmount::AllIn => {
+                    self.balances[winner] += self.balances[loser];
+                    self.balances[loser] = 0;
+                }
+                BetAmount::Folded(amount) => {
+                    self.balances[winner] += amount;
+                    self.balances[loser] -= amount;
+                }
+            }
+        }
+    }
+
+    fn do_showdown(&mut self, card_mapping: &LookupMap<BnCardBuf, usize>, pp: &BnParameters) {
+        let pks = self.player_game_pubkeys.iter().map(|x| x.deserialize().expect("failed to deserialize pubkey")).collect::<Vec<_>>();
+        let mut community = Vec::new();
+        for i in (self.num_players() * 2..self.num_players() * 2 + 5) {
+            let masked_card = self.deck[i].deserialize().expect("failed to deserialize masked community card");
+            let reveal_tokens_with_proofs = self.reveal_tokens_with_proofs[i].iter().map(|x| {
+                x.as_ref().expect("reveal token not set").deserialize().expect("failed to deserialize reveal token")
+            }).collect::<Vec<_>>();
+            let decryption_key = reveal_tokens_with_proofs.into_iter().zip(pks.clone()).map(|((token, proof), pk)| (token, proof, pk)).collect();
+            let card_value = BnCardProtocol::unmask(pp, &decryption_key, &masked_card, false).expect("failed to unmask card");
+            let card_value = BnCardBuf::serialize(card_value).expect("failed to serialize card");
+            community.push(card_value_to_card(card_mapping, &card_value));
+        }
+
+        let evaluator = Evaluator::new();
+        let mut hands = Vec::new();
+        for player in (0..self.num_players()).filter(|&i| !self.player_is_folded(i)) {
+            let hole_indices = [player * 2, player * 2 + 1];
+            let mut hole = Vec::new();
+
+            for i in hole_indices {
+                let masked_card = self.deck[i].deserialize().expect("failed to deserialize masked hole card");
+                let reveal_tokens_with_proofs = self.reveal_tokens_with_proofs[i].iter().map(|x| {
+                    x.as_ref().expect("reveal token not set").deserialize().expect("failed to deserialize reveal token")
+                }).collect::<Vec<_>>();
+                let decryption_key = reveal_tokens_with_proofs.into_iter().zip(pks.clone()).map(|((token, proof), pk)| (token, proof, pk)).collect();
+                let card_value = BnCardProtocol::unmask(pp, &decryption_key, &masked_card, false).expect("failed to unmask card");
+                let card_value = BnCardBuf::serialize(card_value).expect("failed to serialize card");
+                hole.push(card_value_to_card(card_mapping, &card_value));
+            }
+            let hand = [hole, community.clone()].concat();
+            let hand_eval = evaluator.evaluate(&hand).expect("failed to evaluate hand");
+            hands.push((player, hand_eval));
+        }
+
+        let &(winner, _) = hands.iter().reduce(|a, b| if a.1 > b.1 { a } else { b }).expect("no winner");
+        self.transfer_pot(winner);
+    }
+
+    fn new_round(&mut self) {
+        self.reset_bets();
+        self.reset_checks();
+        self.reset_revealed_players();
+        self.reset_reveal_tokens();
+        self.ante = 0;
+        self.turn = self.dealer;
+    }
+
 }
 
 
@@ -364,6 +447,7 @@ pub enum Phase {
     BET2,
     RIVER,
     BET3,
+    SHOWDOWN_REVEAL,
     SHOWDOWN,
 }
 
@@ -377,10 +461,14 @@ pub enum Game {
 impl Default for Contract {
     fn default() -> Self {
         let card_values = get_card_elems_buf(52).unwrap();
+        let mut card_mapping = LookupMap::new(MAPPING_STORAGE_KEY);
+        for (i, value) in card_values.iter().enumerate() {
+            card_mapping.insert(value, &i);
+        }
         Self {
             games: LookupMap::new(GAMES_STORAGE_KEY),
             trusted_setup_params: BnParamsBuf { buf: vec![] },
-            card_values,
+            card_mapping,
         }
     }
 }
@@ -392,12 +480,16 @@ impl Contract {
     #[private]
     pub fn init(trusted_setup_params: BnParamsBuf) -> Self {
         let card_values = get_card_elems_buf(52).unwrap();
+        let mut card_mapping = LookupMap::new(MAPPING_STORAGE_KEY);
+        for (i, value) in card_values.iter().enumerate() {
+            card_mapping.insert(value, &i);
+        }
         // check serialization of params
         // let _ = trusted_setup_params.deserialize().expect("failed to deserialize trusted setup params");
         Self {
             games: LookupMap::new(GAMES_STORAGE_KEY),
             trusted_setup_params,
-            card_values,
+            card_mapping
         }
     }
 
@@ -506,7 +598,7 @@ impl Contract {
                 assert!(state.deck.len() == 0, "deck must not have been initialized yet");
                 assert!(deck.len() == 52, "deck must have 52 cards");
 
-                state.reset_reveal_tokens();
+                state.new_round();
                 state.set_deck(deck)
             },
             _ => panic!("game is not in progress")
@@ -547,10 +639,6 @@ impl Contract {
 
                 if state.turn == state.dealer {
                     state.phase = Phase::DEAL;
-                    state.reset_bets();
-                    state.reset_checks();
-                    state.reset_revealed_players();
-                    state.ante = 0;
                 }
             },
             _ => panic!("game is not in progress")
@@ -696,22 +784,7 @@ impl Contract {
                 if state.num_players_in() == 1 {
                     // that player won  
                     let winner = state.next_in_player().unwrap();
-                    for (loser, bet) in state.bets.iter().enumerate() {
-                        match bet {
-                            BetAmount::In(amount) => {
-                                state.balances[winner] += amount;
-                                state.balances[loser] -= amount;
-                            }
-                            BetAmount::AllIn => {
-                                state.balances[winner] += state.balances[loser];
-                                state.balances[loser] = 0;
-                            }
-                            BetAmount::Folded(amount) => {
-                                state.balances[winner] += amount;
-                                state.balances[loser] -= amount;
-                            }
-                        }
-                    }
+                    state.transfer_pot(winner);
                     state.phase = Phase::SHUFFLE;
                     state.reset_bets();
                     state.reset_checks();
@@ -722,7 +795,7 @@ impl Contract {
                         Phase::BET0 => Phase::FLOP,
                         Phase::BET1 => Phase::TURN,
                         Phase::BET2 => Phase::RIVER,
-                        Phase::BET3 => Phase::SHOWDOWN,
+                        Phase::BET3 => Phase::SHOWDOWN_REVEAL,
                         _ => unreachable!()
                     };
                     state.reset_checks();
@@ -738,6 +811,83 @@ impl Contract {
     }
 
     // reveal cards - each player has to call this (any order) with their reveal tokens calculated client side. number of cards revealed depends on the phase
+    pub fn reveal(&mut self, game_id: GameId, card_indices: Vec<usize>, reveal_tokens_with_proofs: Vec<BnRevealTokenWithProofBuf>) {
+        assert!(self.games.contains_key(&game_id), "game does not exist");
+
+        let mut game = self.games.get(&game_id).unwrap();
+        match game {
+            Game::InProgress(ref mut state) => {
+                let account_id = env::predecessor_account_id();
+                assert!(state.player_account_ids.contains(&account_id), "only players can reveal");
+                let player = state.player_account_ids.iter().position(|id| id == &account_id).unwrap();
+                assert!(!state.revealed_players[player], "you have already revealed");
+
+                let _indices_should_reveal: Vec<usize> = match state.phase {
+                    Phase::FLOP => {
+                        ((state.num_players() * 2)..(state.num_players() * 2 + 3)).collect()
+                    },
+                    Phase::TURN => {
+                        ((state.num_players() * 2 + 3)..(state.num_players() * 2 + 4)).collect()
+                    },
+                    Phase::RIVER => {
+                        ((state.num_players() * 2 + 4)..(state.num_players() * 2 + 5)).collect()
+                    },
+                    Phase::SHOWDOWN_REVEAL => {
+                       vec![player * 2, player * 2 + 1]
+                    }
+                    _ => panic!("cannot reveal cards in this phase")
+                };
+
+                // TODO check indices are sorted, unique, same len as reveal tokens, and match indices_should_reveal
+                let num_cards = match state.phase {
+                    Phase::FLOP => 3,
+                    Phase::TURN => 1,
+                    Phase::RIVER => 1,
+                    Phase::SHOWDOWN_REVEAL => 2,
+                    _ => unreachable!()
+                };
+
+                assert!(card_indices.len() == num_cards, "wrong number of cards revealed");
+                assert!(reveal_tokens_with_proofs.len() == num_cards, "wrong number of reveal tokens revealed");
+
+                let pp = self.trusted_setup_params.deserialize().expect("failed to deserialize trusted setup params");
+                let pk = state.player_game_pubkeys[player].deserialize().expect("failed to deserialize player pubkey");
+
+                for (card_idx, reveal_token_with_proof) in card_indices.into_iter().zip(reveal_tokens_with_proofs) {
+                    let masked_card = state.deck[card_idx].deserialize().expect("failed to deserialize masked card");
+                    let (reveal_token, proof) = reveal_token_with_proof.deserialize().expect("failed to deserialize reveal token with proof");
+                    BnCardProtocol::verify_reveal(&pp, &pk, &reveal_token, &masked_card, &proof).expect("failed to verify reveal token proof");
+                    state.set_reveal_token(card_idx, player, reveal_token_with_proof);
+                }
+
+                state.revealed_players[player] = true;
+
+                if state.all_players_revealed() {
+                    state.phase = match state.phase {
+                        Phase::FLOP => Phase::BET1,
+                        Phase::TURN => Phase::BET2,
+                        Phase::RIVER => Phase::BET3,
+                        Phase::SHOWDOWN_REVEAL => Phase::SHOWDOWN,
+                        _ => unreachable!()
+                    };
+
+                    if let Phase::SHOWDOWN = state.phase {
+                        state.do_showdown(&self.card_mapping, &pp);
+                        state.phase = Phase::SHUFFLE;
+                        state.dealer = (state.dealer + 1) % state.num_players();
+                        state.new_round();
+                    } else {
+                        state.turn = state.dealer;
+                        if state.player_is_folded(state.dealer) {
+                            state.turn = state.next_in_player().expect("next player should exist");
+                        }
+                        state.reset_revealed_players();
+                    }
+                }
+            },
+            _ => panic!("game is not in progress")
+        }
+    }
 }
 
 /*
