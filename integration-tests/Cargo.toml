@@ -16,6 +16,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3.11", features = ["env-filter"] }
 workspaces = "0.6.0"
 pkg-config = "0.3.1"
+rand = "0.8.4"
+ark-ff = "0.3.0"
+ark-ec = "0.3.0"
+barnett-smart-card-protocol = { git = "https://github.com/Sladuca/mental-poker.git" }
+proof-essentials = { git = "https://github.com/Sladuca/proof-toolbox.git" }
 
 [[example]]
 name = "integration-tests"
