@@ -7,6 +7,7 @@
  */
 
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+use near_sdk::log;
 use near_sdk::{
     near_bindgen,
     AccountId,
@@ -540,7 +541,7 @@ impl Contract {
         let proof = creator_key_ownership_proof.deserialize().expect("failed to deserialize key ownership proof");
         let pp = self.trusted_setup_params.deserialize().expect("failed to deserialize trusted setup params");
         let creator_account_id = env::predecessor_account_id();
-        let creator_account_id_bytes = creator_account_id.as_bytes();
+        let creator_account_id_bytes = creator_account_id.as_bytes().to_vec();
 
         BnCardProtocol::verify_key_ownership(&pp, &pk, &creator_account_id_bytes, &proof).expect("failed to verify key ownership proof");
 
@@ -565,7 +566,7 @@ impl Contract {
                 let proof = key_ownership_proof.deserialize().expect("failed to deserialize key ownership proof");
                 let pp = self.trusted_setup_params.deserialize().expect("failed to deserialize trusted setup params");
 
-                let account_id_bytes = account_id.as_bytes();
+                let account_id_bytes = account_id.as_bytes().to_vec();
                 BnCardProtocol::verify_key_ownership(&pp, &_pk, &account_id_bytes, &proof).expect("failed to verify key ownership proof");
 
                 lobby.add_player(account_id, pk);

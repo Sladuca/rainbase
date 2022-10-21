@@ -4,6 +4,7 @@ use serde_json::json;
 use workspaces::{Account, Contract};
 use rand::{Rng, thread_rng};
 use ark_ff::One;
+use ark_ec::ProjectiveCurve;
 use barnett_smart_card_protocol::{
 	BarnettSmartProtocol,
 	discrete_log_cards::{
@@ -94,14 +95,8 @@ async fn test_one_round(
     let params_buf = BnParamsBuf::serialize(params.clone()).unwrap();
     let _pp = params_buf.deserialize().unwrap();
 
-    assert!(alice_key_proof == _alice_proof);
-    assert!(alice_pk == _alice_pk);
-    assert!(params == &_pp);
-    BnCardProtocol::verify_key_ownership(&_pp, &_alice_pk, alice.id().as_bytes(), &_alice_proof).expect("failed to verify key ownership proof");
-
-
     // alice creates a game
-    let receipts = alice.call(contract.id(), "create_game")
+    let game_id= alice.call(contract.id(), "create_game")
         .gas(near_units::parse_gas!("300 T") as u64)
         .args_json(json!({
             "creator_pk": alice_pk_buf,
@@ -109,10 +104,7 @@ async fn test_one_round(
         }))
         .transact()
         .await?
-        .receipt_outcomes()
-        .to_vec();
-
-    println!("receipts: {:?}", receipts);
+        .json()?;
 
     // // bob joins the game
     // bob.call(contract.id(), "join_game")
