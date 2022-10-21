@@ -96,7 +96,7 @@ async fn test_one_round(
     let _pp = params_buf.deserialize().unwrap();
 
     // alice creates a game
-    let game_id= alice.call(contract.id(), "create_game")
+    let game_id: [u8; 4] = alice.call(contract.id(), "create_game")
         .gas(near_units::parse_gas!("300 T") as u64)
         .args_json(json!({
             "creator_pk": alice_pk_buf,
