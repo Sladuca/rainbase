@@ -9,6 +9,8 @@ node_modules
 /out
 /dist
 target
+params.json
+.near_account
 
 # keys
 /templates/react/neardev
