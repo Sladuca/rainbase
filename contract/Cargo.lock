@@ -250,7 +250,7 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 [[package]]
 name = "barnett-smart-card-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sladuca/mental-poker.git#a882c4b3fcd9da7ea30d91d55f207c1162ce35d3"
+source = "git+https://github.com/Sladuca/mental-poker.git#a25eab6299fc5360d566cfbc6009dab1055d522f"
 dependencies = [
  "ark-crypto-primitives",
  "ark-ec",
@@ -751,6 +751,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "is_sorted"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357376465c37db3372ef6a00585d336ed3d0f11d4345eef77ebcb05865392b21"
+
+[[package]]
 name = "itoa"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1199,6 +1205,7 @@ name = "rainbase_contract"
 version = "1.0.0"
 dependencies = [
  "barnett-smart-card-protocol",
+ "is_sorted",
  "near-sdk",
  "rand 0.8.5",
  "serde_json",
