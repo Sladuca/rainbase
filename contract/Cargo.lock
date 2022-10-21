@@ -250,7 +250,7 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 [[package]]
 name = "barnett-smart-card-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sladuca/mental-poker.git#a882c4b3fcd9da7ea30d91d55f207c1162ce35d3"
+source = "git+https://github.com/Sladuca/mental-poker.git#5e5019f0dda0eb339e92eb1c9f947022287ffd03"
 dependencies = [
  "ark-crypto-primitives",
  "ark-ec",
