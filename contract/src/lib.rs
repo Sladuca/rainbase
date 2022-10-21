@@ -49,6 +49,8 @@ use rand::{
 };
 
 const GAMES_STORAGE_KEY: &'static [u8] = b"GAMES";
+const LITTLE_BLIND_AMOUNT: Balance = 5;
+const BIG_BLIND_AMOUNT: Balance = 10;
 
 type GameId = [u8; 4];
 
@@ -119,14 +121,16 @@ pub struct GameState {
     pub dealer: usize,
 
     /// used to check which players have revealed.
-    pub revealed_players: Vec<Option<()>>,
+    pub revealed_players: Vec<bool>,
 
     /// the amounts each player has bet so far
     pub bets: Vec<BetAmount>,
 
-    /// which players are still in on the round
-    /// when a player folds, their corresponding `Option` is set to `None`
-    pub players_in: Vec<Option<()>>,
+    /// the current ante
+    pub ante: Balance,
+
+    /// number of players who have checked
+    pub checks: Vec<bool>,
 
     /// the number of "chips" each player has
     pub balances: Vec<Balance>,
@@ -187,9 +191,10 @@ impl GameState {
             phase: Phase::SHUFFLE,
             turn: 0,
             dealer: 0,
-            revealed_players: vec![None; num_players],
+            ante: 0,
+            checks: vec![false; num_players],
+            revealed_players: vec![false; num_players],
             bets: vec![BetAmount::In(0); num_players],
-            players_in: vec![Some(()); num_players],
             balances: vec![0; num_players],
             last_modified: env::block_timestamp(),
             pp,
@@ -230,15 +235,119 @@ impl GameState {
     }
 
     fn set_revealed_player(&mut self, player_idx: usize) {
-        self.revealed_players[player_idx] = Some(());
+        self.revealed_players[player_idx] = true;
     }
 
     fn reset_revealed_players(&mut self) {
-        self.revealed_players = vec![None; self.num_players()];
+        self.revealed_players = vec![false; self.num_players()];
     }
 
     fn all_players_revealed(&self) -> bool {
-        self.revealed_players.iter().all(|x| x.is_some())
+        self.revealed_players.iter().all(|&x| x)
+    }
+
+    fn num_checks(&self) -> usize {
+        self.checks.iter().filter(|&x| *x).count()
+    }
+
+    fn reset_checks(&mut self) {
+        self.checks = vec![false; self.num_players()];
+    }
+
+    fn set_player_checked(&mut self, player_idx: usize) {
+        self.checks[player_idx] = true;
+    }
+
+    fn unset_player_checked(&mut self, player_idx: usize) {
+        self.checks[player_idx] = false;
+    }
+
+    fn num_players_in(&self) -> usize {
+        (0..self.bets.len()).filter(|&i| !self.player_is_folded(i)).count()
+    }
+
+    fn num_players_checked(&self) -> usize {
+        self.checks.iter().filter(|&x| *x).count()
+    }
+
+    fn enough_players_checked(&self) -> bool {
+        self.num_players_in() == self.num_players_checked()
+    }
+
+    fn set_folded_player(&mut self, player_idx: usize) {
+        self.bets[player_idx] = match self.bets[player_idx] {
+            BetAmount::In(amt) => BetAmount::Folded(amt),
+            BetAmount::AllIn => BetAmount::Folded(self.balances[player_idx]),
+            _ => panic!("player is already folded")
+        }
+    }
+
+    fn reset_bets(&mut self) {
+        self.bets = vec![BetAmount::In(0); self.num_players()];
+    }
+
+    fn player_can_check(&self) -> bool {
+        let player_idx = self.turn;
+        match self.bets[player_idx] {
+            BetAmount::In(amt) => amt == self.ante,
+            BetAmount::AllIn => true,
+            BetAmount::Folded(_) => false
+        }
+    }
+
+    fn player_can_call(&self) -> bool {
+        let player_idx = self.turn;
+        match self.bets[player_idx] {
+            BetAmount::In(_) => self.balances[player_idx] >= self.ante,
+            BetAmount::AllIn => false,
+            BetAmount::Folded(_) => false
+        }
+    }
+
+    fn player_can_all_in(&self) -> bool {
+        let player_idx = self.turn;
+        match self.bets[player_idx] {
+            BetAmount::AllIn => false,
+            BetAmount::In(_) => true,
+            BetAmount::Folded(_) => false,
+        }
+    }
+
+    fn player_can_fold(&self) -> bool {
+        let player_idx = self.turn;
+        match self.bets[player_idx] {
+            BetAmount::AllIn => true,
+            BetAmount::In(_) => true,
+            BetAmount::Folded(_) => false,
+        }
+    }
+
+    fn player_can_raise(&self) -> bool {
+        let player_idx = self.turn;
+        match self.bets[player_idx] {
+            BetAmount::AllIn => false,
+            BetAmount::In(_) => self.balances[player_idx] > self.ante,
+            BetAmount::Folded(_) => false,
+        }
+    }
+
+    fn next_in_player(&self) -> Option<usize> {
+        let mut count = 0;
+        let mut i = (self.turn + 1) % self.num_players();
+        loop {
+            if !self.player_is_folded(i) {
+                return Some(i);
+            }
+            i = (i + 1) % self.num_players();
+            count += 1;
+            if count == self.num_players() {
+                return None;
+            }
+        }
+    }
+
+    fn player_is_folded(&self, i: usize) -> bool {
+        matches!(self.bets[i], BetAmount::Folded(_))
     }
 }
 
@@ -247,6 +356,7 @@ impl GameState {
 pub enum Phase {
     SHUFFLE,
     DEAL,
+    BLIND,
     BET0,
     FLOP,
     BET1,
@@ -437,6 +547,10 @@ impl Contract {
 
                 if state.turn == state.dealer {
                     state.phase = Phase::DEAL;
+                    state.reset_bets();
+                    state.reset_checks();
+                    state.reset_revealed_players();
+                    state.ante = 0;
                 }
             },
             _ => panic!("game is not in progress")
@@ -481,19 +595,149 @@ impl Contract {
                 state.set_revealed_player(player_index);
 
                 if state.all_players_revealed() {
-                    state.phase = Phase::BET0;
+                    state.phase = Phase::BLIND;
+                    state.turn = (state.dealer + 1) % state.num_players();
                 }
             },
             _ => panic!("game is not in progress")
         }
     }
 
+    // blind
+    pub fn blind(&mut self, game_id: GameId) {
+        assert!(self.games.contains_key(&game_id), "game does not exist");
+
+        let mut game = self.games.get(&game_id).unwrap();
+        match game {
+            Game::InProgress(ref mut state) => {
+                assert!(matches!(state.phase, Phase::BLIND), "game is not in the blind phase");
+                let account_id = env::predecessor_account_id();
+                assert!(state.player_account_ids.contains(&account_id), "only players can blind");
+
+                let player_index = state.player_account_ids.iter().position(|id| id == &account_id).unwrap();
+                assert!(state.turn == player_index, "it is not your turn to blind");
+
+                let player_balance = state.balances[player_index];
+                let blind_amount = if state.turn == (state.dealer + 1) % state.num_players() { LITTLE_BLIND_AMOUNT } else { BIG_BLIND_AMOUNT };
+                if player_balance < blind_amount {
+                    state.bets[player_index] = BetAmount::AllIn;
+                    state.ante = state.balances[player_index];
+                } else {
+                    state.bets[player_index] = BetAmount::In(blind_amount);
+                    state.ante = blind_amount;
+                }
+
+                if state.turn == (state.dealer + 3) % state.num_players() {
+                    state.phase = Phase::BET0;
+                }
+            },
+            _ => panic!("game is not in progress")
+        } 
+    }
+
 
     // place bet - players call this in turn order until the betting is done. this is only called during the bet phases
+    pub fn bet(&mut self, game_id: GameId, call: bool, check: bool, all_in: bool, fold: bool, raise: Option<Balance>) {
+        assert!(self.games.contains_key(&game_id), "game does not exist");
+
+        let mut game = self.games.get(&game_id).unwrap();
+        match game {
+            Game::InProgress(ref mut state) => {
+                assert!(matches!(state.phase, Phase::BET0 | Phase::BET1 | Phase::BET2 | Phase::BET3), "game is not in a bet phase");
+
+                let account_id = env::predecessor_account_id();
+                assert!(state.player_account_ids.contains(&account_id), "only players can bet");
+                let player = state.player_account_ids.iter().position(|id| id == &account_id).unwrap();
+                assert!(state.turn == player, "it is not your turn to bet");
+
+                match (call, check, all_in, fold, raise) {
+                    // call
+                    (true, false, false, false, None) => {
+                        assert!(state.player_can_call(), "you cannot call");
+                        state.bets[player] = BetAmount::In(state.ante);
+                        state.reset_checks();
+                    }
+                    // check
+                    (false, true, false, false, None) => {
+                        assert!(state.player_can_check(), "you cannot check");
+                        state.set_player_checked(player);
+                    }
+                    // all in
+                    (false, false, true, false, None) => {
+                        assert!(state.player_can_all_in(), "you cannot all in");
+                        state.bets[player] = BetAmount::AllIn;
+                        if state.balances[player] > state.ante {
+                            state.ante = state.balances[player];
+                        }
+                        state.reset_checks()
+                    }
+                    // fold
+                    (false, false, false, true, None) => {
+                        assert!(state.player_can_fold(), "you cannot fold");
+                        state.bets[player] = match state.bets[player] {
+                            BetAmount::In(amount) => BetAmount::Folded(amount),
+                            BetAmount::AllIn => BetAmount::Folded(state.balances[player]),
+                            _ => unreachable!()
+                        };
+                        state.checks[player] = false;
+                    }
+                    // raise
+                    (false, false, false, false, Some(raise_amount)) => {
+                        assert!(state.player_can_raise(), "you cannot raise");
+                        assert!(raise_amount > state.ante, "raise amount must be greater than the ante");
+                        assert!(raise_amount <= state.balances[player], "raise amount must be less than or equal to your balance");
+                        state.bets[player] = BetAmount::In(raise_amount); 
+                        state.ante = raise_amount;
+                        state.reset_checks();
+                    }
+                    _ => panic!("invalid bet flags")
+                };
+
+                if state.num_players_in() == 1 {
+                    // that player won  
+                    let winner = state.next_in_player().unwrap();
+                    for (loser, bet) in state.bets.iter().enumerate() {
+                        match bet {
+                            BetAmount::In(amount) => {
+                                state.balances[winner] += amount;
+                                state.balances[loser] -= amount;
+                            }
+                            BetAmount::AllIn => {
+                                state.balances[winner] += state.balances[loser];
+                                state.balances[loser] = 0;
+                            }
+                            BetAmount::Folded(amount) => {
+                                state.balances[winner] += amount;
+                                state.balances[loser] -= amount;
+                            }
+                        }
+                    }
+                    state.phase = Phase::SHUFFLE;
+                    state.reset_bets();
+                    state.reset_checks();
+                    state.reset_revealed_players();
+                } else if state.enough_players_checked() {
+                    // move to next phase
+                    state.phase = match state.phase {
+                        Phase::BET0 => Phase::FLOP,
+                        Phase::BET1 => Phase::TURN,
+                        Phase::BET2 => Phase::RIVER,
+                        Phase::BET3 => Phase::SHOWDOWN,
+                        _ => unreachable!()
+                    };
+                    state.reset_checks();
+                } else {
+                    // move to next player
+                    state.turn = state.next_in_player().unwrap();
+                }
+
+                state.turn = state.next_in_player().expect("next player should exist");
+            },
+            _ => panic!("game is not in progress")
+        }
+    }
 
     // reveal cards - each player has to call this (any order) with their reveal tokens calculated client side. number of cards revealed depends on the phase
-
-
 }
 
 /*
